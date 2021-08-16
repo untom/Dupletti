@@ -1,0 +1,26 @@
+[package]
+name = "dupletti"
+version = "0.1.0"
+authors = ["tom <thomas@yesmay.be>"]
+edition = "2018"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+anyhow = "1.0"
+glob = "0.3"
+tempfile = "3"
+blake2 = "0.9"
+rusqlite = "0.25"
+structopt = "0.3"
+rayon = "1.5"
+rand = "0.8"
+log = "0.4"
+env_logger = "0.8"
+serde = { version = "1.0", features = ["derive"] }
+rouille = "3.2"
+simple-error = "0.2.3"
+
+[dependencies.tera]
+version = "1"
+default-features = true
