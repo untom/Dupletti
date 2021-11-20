@@ -89,97 +89,49 @@ pub fn get_list_of_similar_files(db: &Database) -> Result<Vec<Vec<FileEntry>>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rusqlite::params;
+
+    impl FileEntry {
+        fn new(id: i64, path: &str, size: u64) -> FileEntry {
+            FileEntry {
+                id: id,
+                path: PathBuf::from(path),
+                size: size,
+            }
+        }
+    }
+
     #[test]
     fn test_resultbag() -> Result<()> {
-        let mut testfiles = Vec::new();
-        testfiles.push(FileDigest {
-            id: 1,
-            path: PathBuf::from("/tmp/a"),
-            digest: vec![0, 1, 2, 3],
-            size: 2,
-        });
-        testfiles.push(FileDigest {
-            id: 2,
-            path: PathBuf::from("/tmp/b"),
-            digest: vec![0, 1, 2, 3],
-            size: 2,
-        });
-        testfiles.push(FileDigest {
-            id: 3,
-            path: PathBuf::from("/tmp/d"),
-            digest: vec![1, 1, 2, 4],
-            size: 1,
-        });
-        testfiles.push(FileDigest {
-            id: 4,
-            path: PathBuf::from("/tmp/e"),
-            digest: vec![1, 1, 2, 5],
-            size: 3,
-        });
-        testfiles.push(FileDigest {
-            id: 5,
-            path: PathBuf::from("/tmp/c"),
-            digest: vec![1, 1, 2, 4],
-            size: 1,
-        });
-        testfiles.push(FileDigest {
-            id: 6,
-            path: PathBuf::from("/tmp/f"),
-            digest: vec![1, 1, 2, 5],
-            size: 3,
-        });
-        testfiles.push(FileDigest {
-            id: 7,
-            path: PathBuf::from("/tmp/g"),
-            digest: vec![1, 1, 2, 7],
-            size: 4,
-        });
-
         let db = Database::new("test.sqlite", true)?;
-        for f in &testfiles {
-            db.insert_filedigest(f)?;
-        }
-
+        db.db.execute(
+            "INSERT INTO file_digests (id, path, digest, size) VALUES \
+                (1, '/tmp/a', x'aaaaaaaa', 2), 
+                (2, '/tmp/b', x'aaaaaaaa', 2), 
+                (3, '/tmp/d', x'aaaaaaab', 1), 
+                (4, '/tmp/e', x'aaaaaaac', 3), 
+                (5, '/tmp/c', x'aaaaaaab', 1), 
+                (6, '/tmp/f', x'aaaaaaac', 3), 
+                (7, '/tmp/g', x'aaaaaaad', 4)",
+            params![],
+        )?;
+        let testfiles = db.get_all_filedigests()?;
         let similar_files = find_similarities(testfiles);
         let results = into_resultbag(&db, &similar_files)?;
 
         // TODO: this relies on the DB to retrieve filedigests in the order they were inserted
         let target = vec![
             vec![
-                FileEntry {
-                    id: 4,
-                    path: PathBuf::from("/tmp/e"),
-                    size: 3,
-                },
-                FileEntry {
-                    id: 6,
-                    path: PathBuf::from("/tmp/f"),
-                    size: 3,
-                },
+                FileEntry::new(4, "/tmp/e", 3),
+                FileEntry::new(6, "/tmp/f", 3),
             ],
             vec![
-                FileEntry {
-                    id: 1,
-                    path: PathBuf::from("/tmp/a"),
-                    size: 2,
-                },
-                FileEntry {
-                    id: 2,
-                    path: PathBuf::from("/tmp/b"),
-                    size: 2,
-                },
+                FileEntry::new(1, "/tmp/a", 2),
+                FileEntry::new(2, "/tmp/b", 2),
             ],
             vec![
-                FileEntry {
-                    id: 3,
-                    path: PathBuf::from("/tmp/d"),
-                    size: 1,
-                },
-                FileEntry {
-                    id: 5,
-                    path: PathBuf::from("/tmp/c"),
-                    size: 1,
-                },
+                FileEntry::new(3, "/tmp/d", 1),
+                FileEntry::new(5, "/tmp/c", 1),
             ],
         ];
         assert_eq!(results, target);
@@ -189,37 +141,11 @@ mod tests {
     #[test]
     fn test_find_similarities() {
         let mut testfiles = Vec::new();
-        testfiles.push(FileDigest {
-            id: 1,
-            path: PathBuf::from("/tmp/a"),
-            digest: vec![0, 1, 2, 3],
-            size: 1,
-        });
-        testfiles.push(FileDigest {
-            id: 2,
-            path: PathBuf::from("/tmp/a"),
-            digest: vec![0, 1, 2, 3],
-            size: 1,
-        });
-        testfiles.push(FileDigest {
-            id: 3,
-            path: PathBuf::from("/tmp/a"),
-            digest: vec![1, 1, 2, 4],
-            size: 1,
-        });
-        testfiles.push(FileDigest {
-            id: 4,
-            path: PathBuf::from("/tmp/a"),
-            digest: vec![1, 1, 2, 4],
-            size: 1,
-        });
-        testfiles.push(FileDigest {
-            id: 5,
-            path: PathBuf::from("/tmp/a"),
-            digest: vec![1, 1, 2, 6],
-            size: 1,
-        });
-
+        testfiles.push(FileDigest::new(1, "/tmp/a", vec![0, 1, 2, 3], 1));
+        testfiles.push(FileDigest::new(2, "/tmp/b", vec![0, 1, 2, 3], 1));
+        testfiles.push(FileDigest::new(3, "/tmp/c", vec![0, 1, 2, 4], 1));
+        testfiles.push(FileDigest::new(4, "/tmp/d", vec![0, 1, 2, 4], 1));
+        testfiles.push(FileDigest::new(5, "/tmp/e", vec![0, 1, 2, 5], 2));
         let list_of_similar_files = find_similarities(testfiles);
 
         let mut target_sim_list = HashSet::new();

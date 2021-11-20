@@ -11,8 +11,19 @@ pub struct FileDigest {
     pub size: u64,
 }
 
+impl FileDigest {
+    pub fn new(id: i64, path: &str, digest: Vec<u8>, size: u64) -> FileDigest {
+        FileDigest {
+            id: id,
+            path: PathBuf::from(path),
+            digest: digest,
+            size: size,
+        }
+    }
+}
+
 pub struct Database {
-    db: Connection,
+    pub db: Connection,
 }
 
 impl Database {
@@ -23,6 +34,8 @@ impl Database {
         if reset {
             db.db
                 .execute("DROP TABLE IF EXISTS file_digests", params![])?;
+            db.db
+                .execute("DROP TABLE IF EXISTS video_histograms", params![])?;
         }
         db.db
             .execute(
@@ -71,24 +84,6 @@ impl Database {
         Ok(())
     }
 
-    pub fn insert_many_filedigests(&mut self, files: &Vec<FileDigest>) -> Result<()> {
-        let tx = self.db.transaction()?;
-        let mut stmt = tx.prepare(
-            "INSERT OR IGNORE INTO file_digests (path, digest, size) VALUES (?1, ?2, ?3)",
-        )?;
-        for f in files {
-            // TODO: raise Error when _cnt == 0, because that means we re-inserted a path.
-            let path = f.path.to_string_lossy();
-            let cnt = stmt.execute(params![path, f.digest, f.size])?;
-            if cnt == 0 {
-                let err = SimpleError::new(format!("Unable to insert {}", path));
-                return Err(anyhow::Error::new(err));
-            }
-        }
-        stmt.finalize()?;
-        Ok(tx.commit()?)
-    }
-
     pub fn lookup_filedigest(&self, file_id: i64) -> Result<FileDigest> {
         Ok(self.db.query_row(
             "SELECT  id, path, digest, size FROM file_digests WHERE id =(?1)",
@@ -103,15 +98,6 @@ impl Database {
                 })
             },
         )?)
-    }
-
-    pub fn rename_file(&self, file_id: i64, new_path: String) -> Result<()> {
-        self.db.execute(
-            "UPDATE file_digests SET path = (?1) WHERE id =(?2)",
-            params![new_path, file_id],
-        )?;
-        log::debug!("DB: renaming {} to {}", file_id, new_path);
-        Ok(())
     }
 
     pub fn delete_filedigest(&self, file_id: i64) -> Result<usize> {
@@ -132,12 +118,7 @@ mod tests {
     #[test]
     fn test_insert_file() -> Result<()> {
         let db = Database::new("test1.sqlite", true)?;
-        let file = FileDigest {
-            id: 1,
-            path: PathBuf::from("/tmp/a"),
-            digest: vec![0, 1, 2, 3],
-            size: 1,
-        };
+        let file = FileDigest::new(1, "/tmp/a", vec![0, 1, 2, 3], 1);
         db.insert_filedigest(&file)?;
         let inserted_files = db.get_all_filedigests()?;
         let target = vec![file];
@@ -148,73 +129,16 @@ mod tests {
     #[test]
     fn test_lookup_file_by_index() -> Result<()> {
         let db = Database::new("test2.sqlite", true)?;
-        let target_path = PathBuf::from("/tmp/abcde");
-        let file1 = FileDigest {
-            id: 1,
-            path: PathBuf::from("/tmp/xeq"),
-            digest: vec![0, 1, 2, 3],
-            size: 1,
-        };
-        let file2 = FileDigest {
-            id: 2,
-            path: target_path.clone(),
-            digest: vec![0, 1, 2, 3],
-            size: 1,
-        };
-        let file3 = FileDigest {
-            id: 3,
-            path: PathBuf::from("/tmp/cde"),
-            digest: vec![0, 1, 2, 3],
-            size: 1,
-        };
+        let target_path = "/tmp/abcde";
+        let file1 = FileDigest::new(1, "/tmp/abc", vec![0, 1, 2, 3], 1);
+        let file2 = FileDigest::new(2, target_path.clone(), vec![0, 1, 2, 3], 1);
+        let file3 = FileDigest::new(3, "/tmp/cde", vec![0, 1, 2, 3], 1);
         db.insert_filedigest(&file1)?;
         db.insert_filedigest(&file2)?;
         db.insert_filedigest(&file3)?;
 
         let file = db.lookup_filedigest(2)?;
         assert_eq!(file, file2);
-        Ok(())
-    }
-
-    #[test]
-    fn test_insert_many_filedigests() -> Result<()> {
-        let mut testfiles = Vec::new();
-        testfiles.push(FileDigest {
-            id: 1,
-            path: PathBuf::from("/tmp/a"),
-            digest: vec![0, 1, 2, 3],
-            size: 1,
-        });
-        testfiles.push(FileDigest {
-            id: 2,
-            path: PathBuf::from("/tmp/b"),
-            digest: vec![0, 1, 2, 3],
-            size: 1,
-        });
-        testfiles.push(FileDigest {
-            id: 3,
-            path: PathBuf::from("/tmp/c"),
-            digest: vec![1, 1, 2, 4],
-            size: 1,
-        });
-        testfiles.push(FileDigest {
-            id: 4,
-            path: PathBuf::from("/tmp/d"),
-            digest: vec![1, 1, 2, 4],
-            size: 1,
-        });
-        testfiles.push(FileDigest {
-            id: 5,
-            path: PathBuf::from("/tmp/e"),
-            digest: vec![1, 1, 2, 6],
-            size: 1,
-        });
-
-        let mut db = Database::new("test6.sqlite", true)?;
-        db.insert_many_filedigests(&testfiles)?;
-
-        let result = db.get_all_filedigests()?;
-        assert_eq!(testfiles, result);
         Ok(())
     }
 
@@ -278,61 +202,16 @@ mod tests {
     }
 
     #[test]
-    fn test_rename_file() -> Result<()> {
-        let db = Database::new("test3.sqlite", true)?;
-        let file = FileDigest {
-            id: 1,
-            path: PathBuf::from("/tmp/a"),
-            digest: vec![0, 1, 2, 3],
-            size: 1,
-        };
-        db.insert_filedigest(&file)?;
-        db.rename_file(1, "/tmp/b".to_string())?;
-        let file = db.lookup_filedigest(1)?;
-        assert_eq!(file.path.to_string_lossy(), "/tmp/b");
-        Ok(())
-    }
-
-    #[test]
     fn test_insert_file_twice() -> Result<()> {
-        let mut db = Database::new("test4.sqlite", true)?;
-        let file1 = FileDigest {
-            id: 1,
-            path: PathBuf::from("/tmp/a"),
-            digest: vec![0, 1, 2, 3],
-            size: 1,
-        };
-        let file2 = FileDigest {
-            id: 2,
-            path: PathBuf::from("/tmp/a"),
-            digest: vec![0, 1, 2, 4],
-            size: 1,
-        };
+        let db = Database::new("test4.sqlite", true)?;
+        let file1 = FileDigest::new(1, "/tmp/a", vec![0, 1, 2, 3], 1);
+        let file2 = FileDigest::new(2, "/tmp/a", vec![0, 1, 2, 4], 1);
         db.insert_filedigest(&file1)?;
         let throws_error = match db.insert_filedigest(&file2) {
             Ok(_) => false,
             Err(_) => true,
         };
         assert!(throws_error);
-
-        let mut testfiles = Vec::new();
-        testfiles.push(FileDigest {
-            id: 3,
-            path: PathBuf::from("/tmp/b"),
-            digest: vec![1, 1, 2, 3],
-            size: 1,
-        });
-        testfiles.push(FileDigest {
-            id: 4,
-            path: PathBuf::from("/tmp/b"),
-            digest: vec![1, 1, 2, 4],
-            size: 1,
-        });
-        let throws_error2 = match db.insert_many_filedigests(&testfiles) {
-            Ok(_) => false,
-            Err(_) => true,
-        };
-        assert!(throws_error2);
         Ok(())
     }
 }

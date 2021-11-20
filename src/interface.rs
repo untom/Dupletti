@@ -1,12 +1,23 @@
+use crate::database::Database;
+use crate::similarities;
 use anyhow::Result;
 use log;
 use rouille::{router, Response};
+use rusqlite::params;
 use std::fs;
+use std::sync::Mutex;
 use tera::{Context as TeraContext, Tera};
 
-use crate::database::Database;
-use crate::similarities;
-use std::sync::Mutex;
+impl Database {
+    fn rename_file(&self, file_id: i64, new_path: String) -> Result<()> {
+        self.db.execute(
+            "UPDATE file_digests SET path = (?1) WHERE id =(?2)",
+            params![new_path, file_id],
+        )?;
+        log::debug!("DB: renaming {} to {}", file_id, new_path);
+        Ok(())
+    }
+}
 
 pub fn show_results_in_console(result: &Vec<Vec<similarities::FileEntry>>) {
     let mut total_size_saved = 0;
@@ -134,4 +145,27 @@ pub fn start_web_interface(
         );
         response
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::database::FileDigest;
+    use std::path::PathBuf;
+
+    #[test]
+    fn test_rename_file() -> Result<()> {
+        let db = Database::new("test3.sqlite", true)?;
+        let file = FileDigest {
+            id: 1,
+            path: PathBuf::from("/tmp/a"),
+            digest: vec![0, 1, 2, 3],
+            size: 1,
+        };
+        db.insert_filedigest(&file)?;
+        db.rename_file(1, "/tmp/b".to_string())?;
+        let file = db.lookup_filedigest(1)?;
+        assert_eq!(file.path.to_string_lossy(), "/tmp/b");
+        Ok(())
+    }
 }
