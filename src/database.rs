@@ -48,6 +48,17 @@ impl Database {
                 params![],
             )
             .context("Creating Database")?;
+
+        db.db
+            .execute(
+                "CREATE TABLE IF NOT EXISTS video_histograms (
+					id          INTEGER PRIMARY KEY,
+					histogram	BLOB   
+					)",
+                params![],
+            )
+            .context("Creating Database")?;
+
         Ok(db)
     }
 

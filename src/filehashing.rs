@@ -93,7 +93,7 @@ pub fn process_filelist(
         let mps = total_size_mb as f64 / dt;
         let fps = commit_batchsize as f64 / dt;
         log::debug!(
-            "Committing to DB (batch speed: {:3.2} MiB/s, {:3.2} files/s)",
+            "Committing to DB (speed: {:3.2} MiB/s, {:3.2} files/s)",
             mps,
             fps
         );

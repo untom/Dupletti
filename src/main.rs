@@ -19,6 +19,9 @@ pub use crate::similarities::*;
 mod filehashing;
 pub use crate::filehashing::*;
 
+mod videohistogram;
+pub use crate::videohistogram::*;
+
 /// Search for duplicate files
 #[derive(StructOpt, Debug)]
 struct ProgramArguments {
@@ -68,6 +71,10 @@ struct ProgramArguments {
     /// interface like 127.0.0.1.
     #[structopt(long)]
     allow_preview: bool,
+
+    /// Enable similarity-search via color histograms
+    #[structopt(long)]
+    videohistogram: bool,
 }
 
 fn list_files_in_directory<P: AsRef<Path>>(directory: P) -> HashSet<PathBuf> {
@@ -127,6 +134,8 @@ fn update_database<P: AsRef<Path>>(
     log::info!("Number of not already indexed files: {:?}", filelist.len());
     log::info!("hashing");
     filehashing::process_filelist(db, filelist, commit_batchsize)?;
+    log::info!("Creating video histograms");
+    videohistogram::update_histograms(db, commit_batchsize)?;
     Ok(())
 }
 
