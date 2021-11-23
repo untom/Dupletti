@@ -48,8 +48,6 @@ impl Database {
 }
 
 struct Video {
-    pub width: u32,
-    pub height: u32,
     decoder: ffmpeg::decoder::Video,
     ictx: ffmpeg::format::context::Input,
     scaler: ffmpeg::software::scaling::Context,
@@ -87,8 +85,6 @@ impl Video {
             decoder,
             ictx,
             scaler,
-            width,
-            height,
             video_stream_index,
         })
     }
@@ -103,12 +99,16 @@ impl Iterator for Video {
             if next_packet.is_some() {
                 let (stream, packet) = next_packet.unwrap();
                 if stream.index() == self.video_stream_index {
-                    self.decoder.send_packet(&packet).unwrap();
-                    let mut decoded = ffmpeg::util::frame::video::Video::empty();
-                    if self.decoder.receive_frame(&mut decoded).is_ok() {
-                        let mut rgb_frame = ffmpeg::util::frame::video::Video::empty();
-                        self.scaler.run(&decoded, &mut rgb_frame).unwrap();
-                        return Some(rgb_frame.data(0).to_vec());
+                    match self.decoder.send_packet(&packet) {
+                        Ok(_) => {
+                            let mut decoded = ffmpeg::util::frame::video::Video::empty();
+                            if self.decoder.receive_frame(&mut decoded).is_ok() {
+                                let mut rgb_frame = ffmpeg::util::frame::video::Video::empty();
+                                self.scaler.run(&decoded, &mut rgb_frame).unwrap();
+                                return Some(rgb_frame.data(0).to_vec());
+                            }
+                        }
+                        Err(_) => (), // some packages contain mistakes, no big deal usually
                     }
                 }
             } else {
