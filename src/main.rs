@@ -121,6 +121,7 @@ fn update_database<P: AsRef<Path>>(
     path: P,
     commit_batchsize: usize,
     clean_unfound: bool,
+    update_videohistogram: bool,
 ) -> Result<()> {
     log::info!("creating file list");
     let complete_filelist = list_files_in_directory(path);
@@ -134,8 +135,10 @@ fn update_database<P: AsRef<Path>>(
     log::info!("Number of not already indexed files: {:?}", filelist.len());
     log::info!("hashing");
     filehashing::process_filelist(db, filelist, commit_batchsize)?;
-    log::info!("Creating video histograms");
-    videohistogram::update_histograms(db, commit_batchsize)?;
+    if update_videohistogram {
+        log::info!("Creating video histograms");
+        videohistogram::update_histograms(db, commit_batchsize)?;
+    }
     Ok(())
 }
 
@@ -173,6 +176,7 @@ fn main() -> Result<()> {
             &args.path,
             args.commit_batchsize,
             args.clean_unfound,
+            args.videohistogram,
         )?;
     }
 
