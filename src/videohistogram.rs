@@ -218,18 +218,18 @@ mod tests {
 
     #[test]
     fn test_get_files_without_histogram() -> Result<()> {
-        let db = Database::new("testhist.sqlite", true)?;
+        let db = Database::new("test_get_files_without_histogram.sqlite", true)?;
         db.db.execute(
-            "INSERT INTO file_digests (id, path) VALUES \
-                (1, '/tmp/a.mp4'), 
-                (2, '/tmp/b.jpg'), 
-                (3, '/tmp/c.wmv'), 
-                (4, '/tmp/d.avi')",
+            "INSERT INTO file_digests (id, path, size) VALUES \
+                (1, '/tmp/a.mp4', 1), 
+                (2, '/tmp/b.jpg', 1), 
+                (3, '/tmp/c.wmv', 1), 
+                (4, '/tmp/d.avi', 1)",
             params![],
         )?;
 
         db.db.execute(
-            "INSERT INTO video_histograms (id, hist) VALUES (3, 0)",
+            "INSERT INTO video_histograms (id, histogram) VALUES (3, 0)",
             params![],
         )?;
 

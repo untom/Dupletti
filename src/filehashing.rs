@@ -125,7 +125,7 @@ mod tests {
         ];
 
         let tempdir = tempdir()?;
-        let filepath = PathBuf::from(tempdir.path()).join("test.txt");
+        let filepath = PathBuf::from(tempdir.path()).join("test_blake2_hash.txt");
         //println!("{:?}", filepath);
         let mut file = File::create(&filepath)?;
         file.write_all(b"Hello, world!")?;
@@ -145,7 +145,7 @@ mod tests {
         ];
 
         let tempdir = tempdir()?;
-        let filepath = PathBuf::from(tempdir.path()).join("test.txt");
+        let filepath = PathBuf::from(tempdir.path()).join("test_process_filelist_and_check_hash.txt");
         println!("{:?}", filepath);
         let mut file = File::create(&filepath)?;
         file.write_all(b"Hello, world!")?;
@@ -154,7 +154,7 @@ mod tests {
         assert_eq!(digest, target_digest);
 
         let filelist: HashSet<_> = vec![filepath.clone()].into_iter().collect();
-        let mut db = Database::new("test3.sqlite", true)?;
+        let mut db = Database::new("test_process_filelist_and_check_hash.sqlite", true)?;
         process_filelist(&mut db, filelist, 16)?;
 
         let inserted_files = db.get_all_filedigests()?;
@@ -169,7 +169,7 @@ mod tests {
         fs::create_dir_all(&dir)?;
         File::create(first_path.clone()).expect("Failed to create temporary file");
 
-        let mut db = Database::new("test4.sqlite", true)?;
+        let mut db = Database::new("test_insert_files_multithreaded.sqlite", true)?;
 
         let mut filelist: HashSet<_> = [
             dir.join("a.txt"),
