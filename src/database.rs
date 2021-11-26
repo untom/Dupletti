@@ -1,6 +1,5 @@
-use anyhow::{Context, Result};
+use anyhow::{anyhow, Context, Result};
 use rusqlite::{params, Connection};
-use simple_error::SimpleError;
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, PartialEq, Clone)]
@@ -89,8 +88,7 @@ impl Database {
             params![path, file.digest, file.size],
         )?;
         if cnt == 0 {
-            let err = SimpleError::new(format!("Unable to insert {}", path));
-            return Err(anyhow::Error::new(err));
+            return Err(anyhow!("Unable to insert {}",path));
         }
         Ok(())
     }

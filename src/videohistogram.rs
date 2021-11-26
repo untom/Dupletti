@@ -5,8 +5,7 @@ use log;
 use ndarray::prelude::*;
 use rayon::prelude::*;
 use rusqlite::params;
-use simple_error::SimpleError;
-use std::{convert::TryFrom, sync::mpsc, time::Instant};
+use std::{sync::mpsc, time::Instant};
 
 pub struct VideoHistogram {
     pub id: i64,
@@ -19,7 +18,7 @@ impl Database {
         let mut stmt = self.db.prepare(
             "SELECT id, path, size, lower(substr(path, -3)) as ext FROM file_digests \
                 WHERE id NOT IN (SELECT id FROM video_histograms) \
-                      AND ext IN ('mp4', 'avi', 'mkv', 'wmv', 'avi')",
+                      AND ext IN ('mp4', 'avi', 'mkv', 'wmv', 'avi', 'flv')",
         )?;
         let ids: Result<Vec<_>, _> = stmt
             .query_map([], |row| {
@@ -38,8 +37,7 @@ impl Database {
         for h in histograms {
             let cnt = stmt.execute(params![h.id, h.histogram])?;
             if cnt == 0 {
-                let err = SimpleError::new(format!("Unable to insert {}", h.id));
-                return Err(anyhow::Error::new(err));
+                return Err(anyhow!("Unable to insert {}", h.id));
             }
         }
         stmt.finalize()?;
@@ -56,37 +54,50 @@ struct Video {
 
 impl Video {
     fn new(path: impl Into<std::path::PathBuf>, width: u32, height: u32) -> Result<Video> {
-        ffmpeg::init().unwrap();
-        let path_into = path.into();
+        let filepath = path.into();
+        // wrapped into immediately invoked function expression so we can catch all errors
+        || -> Result<Video> {
+            ffmpeg::init()?;
+            let ictx = ffmpeg::format::input(&filepath)?;
 
-        let ictx = ffmpeg::format::input(&path_into)?;
-        let input = ictx
-            .streams()
-            .best(ffmpeg::media::Type::Video)
-            .ok_or(anyhow!("No video stream found"))?;
-        let video_stream_index = input.index();
+            let input = ictx
+                .streams()
+                .best(ffmpeg::media::Type::Video)
+                .ok_or(anyhow!("No video stream found"))?;
+            let video_stream_index = input.index();
 
-        let decoder = input.codec().decoder().video()?;
-        let w = decoder.width();
-        let h = decoder.height();
+            let decoder = input.codec().decoder().video()?;
+            let w = decoder.width();
+            let h = decoder.height();
 
-        let scaler = ffmpeg::software::scaling::context::Context::get(
-            decoder.format(),
-            w,
-            h,
-            ffmpeg::format::Pixel::RGB24,
-            width,
-            height,
-            ffmpeg::software::scaling::flag::Flags::FAST_BILINEAR,
-        )?;
+            let scaler = ffmpeg::software::scaling::context::Context::get(
+                decoder.format(),
+                w,
+                h,
+                ffmpeg::format::Pixel::RGB24,
+                width,
+                height,
+                ffmpeg::software::scaling::flag::Flags::FAST_BILINEAR,
+            )?;
 
-        // log::debug!("Opened {:?}: {}x{}", &path_into, w, h);
-        Ok(Video {
-            decoder,
-            ictx,
-            scaler,
-            video_stream_index,
-        })
+            // log::debug!("Opened {:?}: {}x{}", &filepath, w, h);
+            Ok(Video {
+                decoder,
+                ictx,
+                scaler,
+                video_stream_index,
+            })
+        }()
+        .map_err(|e| anyhow!("Unable to open {}: {}", filepath.to_string_lossy(), e))
+    }
+
+    fn _decode_frame(&mut self, packet: &ffmpeg::codec::packet::Packet) -> Result<Vec<u8>> {
+        let mut decoded = ffmpeg::util::frame::video::Video::empty();
+        let mut rgb_frame = ffmpeg::util::frame::video::Video::empty();
+        self.decoder.send_packet(packet)?;
+        self.decoder.receive_frame(&mut decoded)?;
+        self.scaler.run(&decoded, &mut rgb_frame)?;
+        return Ok(rgb_frame.data(0).to_vec());
     }
 }
 
@@ -96,42 +107,37 @@ impl Iterator for Video {
     fn next(&mut self) -> Option<Vec<u8>> {
         loop {
             let next_packet = self.ictx.packets().next();
-            if next_packet.is_some() {
-                let (stream, packet) = next_packet.unwrap();
-                if stream.index() == self.video_stream_index {
-                    match self.decoder.send_packet(&packet) {
-                        Ok(_) => {
-                            let mut decoded = ffmpeg::util::frame::video::Video::empty();
-                            if self.decoder.receive_frame(&mut decoded).is_ok() {
-                                let mut rgb_frame = ffmpeg::util::frame::video::Video::empty();
-                                self.scaler.run(&decoded, &mut rgb_frame).unwrap();
-                                return Some(rgb_frame.data(0).to_vec());
-                            }
-                        }
-                        Err(_) => (), // some packages contain mistakes, no big deal usually
-                    }
-                }
-            } else {
+            if next_packet.is_none() {
                 return None;
+            }
+
+            let (stream, packet) = next_packet.unwrap();
+            if stream.index() != self.video_stream_index {
+                continue;
+            }
+            let frame = self._decode_frame(&packet);
+            if frame.is_ok() {
+                return Some(frame.unwrap());
             }
         }
     }
 }
 
-fn calculate_histogram(path: impl Into<std::path::PathBuf>) -> Result<Vec<u8>> {
+fn calculate_histogram(path: impl Into<std::path::PathBuf> + Clone) -> Result<Vec<u8>> {
     const VIDEO_WIDTH: u32 = 128;
     const VIDEO_HEIGHT: u32 = 128;
-    const NUM_BUCKETS_SHIFT: i32 = 6;
+    const NUM_BUCKETS_SHIFT: usize = 6;
     const NUM_BUCKETS: usize = 256 >> NUM_BUCKETS_SHIFT;
     let mut histogram = Array::<u64, _>::zeros((NUM_BUCKETS, NUM_BUCKETS, NUM_BUCKETS));
     let video = Video::new(path, VIDEO_HEIGHT, VIDEO_WIDTH)?;
-    let mut num_pixel = 0;
+    let mut num_pixel: u64 = 0;
+    let pixel_per_frame: usize = (VIDEO_HEIGHT * VIDEO_WIDTH) as usize;
     for v in video {
-        for i in 0..VIDEO_HEIGHT * VIDEO_WIDTH {
-            let idx: usize = usize::try_from(i * 3).unwrap();
-            let r: usize = (v[idx + 0] >> NUM_BUCKETS_SHIFT as usize).into();
-            let g: usize = (v[idx + 1] >> NUM_BUCKETS_SHIFT as usize).into();
-            let b: usize = (v[idx + 2] >> NUM_BUCKETS_SHIFT as usize).into();
+        for i in 0..pixel_per_frame {
+            let idx = i * 3;
+            let r: usize = (v[idx + 0] >> NUM_BUCKETS_SHIFT).into();
+            let g: usize = (v[idx + 1] >> NUM_BUCKETS_SHIFT).into();
+            let b: usize = (v[idx + 2] >> NUM_BUCKETS_SHIFT).into();
             histogram[[r, g, b]] += 1;
             num_pixel += 1;
         }
@@ -148,7 +154,7 @@ fn calculate_histogram(path: impl Into<std::path::PathBuf>) -> Result<Vec<u8>> {
 
 fn _create_histogram(
     id: i64,
-    path: impl Into<std::path::PathBuf>,
+    path: impl Into<std::path::PathBuf> + Clone,
     size: u64,
 ) -> Result<VideoHistogram> {
     let h = calculate_histogram(path)?;
@@ -208,9 +214,9 @@ mod tests {
     use super::*;
 
     // only used during development
-    //#[test]
+    #[test]
     fn _test_calculate_histogram() -> Result<()> {
-        let h = calculate_histogram("/media/scratch/vid1_360p.mp4")?;
+        let h = calculate_histogram("/media/scratch/vid1_720p.mp4")?;
         //println!("Histogram shape: {:?}, sum: {}", h.shape(), h.sum());
         println!("Histogram: {:?}", h);
         Ok(())

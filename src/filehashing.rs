@@ -1,8 +1,7 @@
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use blake2::{Blake2b, Digest};
 use rayon::prelude::*;
 use rusqlite::params;
-use simple_error::SimpleError;
 use std::fs;
 use std::io::{self, Read};
 use std::sync::mpsc;
@@ -24,8 +23,7 @@ impl Database {
             let path = f.path.to_string_lossy();
             let cnt = stmt.execute(params![path, f.digest, f.size])?;
             if cnt == 0 {
-                let err = SimpleError::new(format!("Unable to insert {}", path));
-                return Err(anyhow::Error::new(err));
+                return Err(anyhow!("Unable to insert {}", path));
             }
         }
         stmt.finalize()?;
@@ -145,7 +143,8 @@ mod tests {
         ];
 
         let tempdir = tempdir()?;
-        let filepath = PathBuf::from(tempdir.path()).join("test_process_filelist_and_check_hash.txt");
+        let filepath =
+            PathBuf::from(tempdir.path()).join("test_process_filelist_and_check_hash.txt");
         println!("{:?}", filepath);
         let mut file = File::create(&filepath)?;
         file.write_all(b"Hello, world!")?;
