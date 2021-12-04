@@ -41,10 +41,8 @@ pub fn show_results_in_console(result: &Vec<Vec<similarities::FileEntry>>) {
         }
     }
 
-    println!(
-        "Total saved size (GB): {:.3}",
-        total_size_saved as f64 / (1024.0 * 1024.0 * 1024.0)
-    );
+    let total_size_gb = total_size_saved as f64 / (1024.0 * 1024.0 * 1024.0);
+    println!("Total saved size: {:.2} GB", total_size_gb);
 }
 
 pub fn render_results_to_html(
@@ -137,6 +135,17 @@ pub fn start_web_interface(
                 log::debug!("# Clustering with threshold {}", threshold);
                 let mut results = videohistogram::find_similar_files(&videohistograms, &videohistograms_distances, threshold);
                 // sort by filesize (maximum first)
+                let mut total_size_saved = 0;
+                for bag in results.iter() {
+                    let mut max_size = 0;
+                    for f in bag {
+                        total_size_saved += f.size;
+                        max_size = std::cmp::max(max_size, f.size);
+                    }
+                    total_size_saved -= max_size;
+                }
+                let total_size_gb = total_size_saved as f64 / (1024.0 * 1024.0 * 1024.0);
+                println!("Total saved size: {:.2} GB", total_size_gb);
                 results.sort_unstable_by_key(|bag| bag.iter().map(|x| x.size).max());
                 results.reverse();
                 log::info!("# Clusters({}): {}", threshold, results.len());

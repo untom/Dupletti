@@ -8,8 +8,6 @@ use rusqlite::params;
 use serde::Serialize;
 use std::collections::HashMap;
 use std::{sync::mpsc, time::Instant};
-//use kiddo::KdTree;
-//use std::convert::TryInto;
 
 const NUM_BUCKETS_SHIFT: usize = 6;
 const NUM_BUCKETS: usize = 256 >> NUM_BUCKETS_SHIFT;
@@ -296,6 +294,9 @@ pub fn find_similar_files<'a, 'b>(
         parent.push(i);
     }
     for i in 0..files.len() {
+        if files[i].histogram.iter().sum::<u8>() == 0 {
+            continue;
+        }
         for j in i..files.len() {
             if dist[[i, j]] < threshold {
                 _union(i, j, &mut parent);
