@@ -5,10 +5,19 @@ use log;
 use ndarray::prelude::*;
 use rayon::prelude::*;
 use rusqlite::params;
+use serde::Serialize;
+use std::collections::HashMap;
 use std::{sync::mpsc, time::Instant};
+//use kiddo::KdTree;
+//use std::convert::TryInto;
 
+const NUM_BUCKETS_SHIFT: usize = 6;
+const NUM_BUCKETS: usize = 256 >> NUM_BUCKETS_SHIFT;
+
+#[derive(Debug, PartialEq, Serialize)]
 pub struct VideoHistogram {
     pub id: i64,
+    pub path: String,
     pub histogram: Vec<u8>,
     pub size: u64, // We need size only for logging purposes
 }
@@ -17,8 +26,8 @@ impl Database {
     fn get_files_without_histogram(&self) -> Result<Vec<(i64, String, u64)>> {
         let mut stmt = self.db.prepare(
             "SELECT id, path, size, lower(substr(path, -3)) as ext FROM file_digests \
-                WHERE id NOT IN (SELECT id FROM video_histograms) \
-                      AND ext IN ('mp4', 'avi', 'mkv', 'wmv', 'avi', 'flv')",
+             WHERE id NOT IN (SELECT id FROM video_histograms) \
+             AND ext IN ('mp4', 'avi', 'mkv', 'wmv', 'avi', 'flv')",
         )?;
         let ids: Result<Vec<_>, _> = stmt
             .query_map([], |row| {
@@ -43,6 +52,27 @@ impl Database {
         stmt.finalize()?;
         Ok(tx.commit()?)
     }
+
+    pub fn get_all_files_with_histogram(&self) -> Result<Vec<VideoHistogram>> {
+        let mut stmt = self.db.prepare(
+            "SELECT f.id, f.path, f.size, h.histogram \
+             FROM file_digests f, video_histograms h \
+             WHERE f.id == h.id",
+        )?;
+        let files: Result<Vec<_>, _> = stmt
+            .query_map([], |row| {
+                let path_string: String = row.get(1)?;
+                Ok(VideoHistogram {
+                    id: row.get(0)?,
+                    path: path_string,
+                    size: row.get(2)?,
+                    histogram: row.get(3)?,
+                })
+            })?
+            .into_iter()
+            .collect();
+        Ok(files?)
+    }
 }
 
 struct Video {
@@ -55,6 +85,7 @@ struct Video {
 impl Video {
     fn new(path: impl Into<std::path::PathBuf>, width: u32, height: u32) -> Result<Video> {
         let filepath = path.into();
+        log::debug!("Opening {:?}", &filepath);
         // wrapped into immediately invoked function expression so we can catch all errors
         || -> Result<Video> {
             ffmpeg::init()?;
@@ -80,7 +111,6 @@ impl Video {
                 ffmpeg::software::scaling::flag::Flags::FAST_BILINEAR,
             )?;
 
-            // log::debug!("Opened {:?}: {}x{}", &filepath, w, h);
             Ok(Video {
                 decoder,
                 ictx,
@@ -126,8 +156,6 @@ impl Iterator for Video {
 fn calculate_histogram(path: impl Into<std::path::PathBuf> + Clone) -> Result<Vec<u8>> {
     const VIDEO_WIDTH: u32 = 128;
     const VIDEO_HEIGHT: u32 = 128;
-    const NUM_BUCKETS_SHIFT: usize = 6;
-    const NUM_BUCKETS: usize = 256 >> NUM_BUCKETS_SHIFT;
     let mut histogram = Array::<u64, _>::zeros((NUM_BUCKETS, NUM_BUCKETS, NUM_BUCKETS));
     let video = Video::new(path, VIDEO_HEIGHT, VIDEO_WIDTH)?;
     let mut num_pixel: u64 = 0;
@@ -162,6 +190,7 @@ fn _create_histogram(
         id: id,
         histogram: h,
         size: size,
+        path: String::new(),
     })
 }
 
@@ -209,12 +238,90 @@ pub fn update_histograms(db: &mut Database, commit_batchsize: usize) -> Result<(
     Ok(())
 }
 
+fn l1_distance(a: &Vec<u8>, b: &Vec<u8>) -> u16 {
+    let mut dist = 0;
+    for i in 0..a.len() {
+        dist += (a[i] as i16 - b[i] as i16).abs();
+    }
+    dist as u16
+}
+
+pub fn calculate_distances(files: &Vec<VideoHistogram>) -> Array2<u16> {
+    let mut dist: Array2<u16> = Array::zeros((files.len(), files.len()));
+    for (i, a) in files.iter().enumerate() {
+        for j in i..files.len() {
+            let b = &files[j];
+            dist[[i, j]] = if i != j {
+                l1_distance(&a.histogram, &b.histogram)
+            } else {
+                0
+            };
+            dist[[j, i]] = dist[[i, j]];
+        }
+    }
+    dist
+}
+
+pub fn find_similar_files<'a, 'b>(
+    files: &'a Vec<VideoHistogram>,
+    dist: &'b Array2<u16>,
+    threshold: u16,
+) -> Vec<Vec<&'a VideoHistogram>> {
+    // datastructures for Union-Find
+    let mut parent = Vec::with_capacity(files.len());
+    fn _find(y: usize, parent: &mut Vec<usize>) -> usize {
+        let mut x = y;
+        while parent[x] != x {
+            let tmp = x;
+            x = parent[x];
+            parent[tmp] = parent[parent[x]];
+        }
+        return x;
+    }
+
+    fn _union(x: usize, y: usize, parent: &mut Vec<usize>) {
+        let x_root = _find(x, parent);
+        let y_root = _find(y, parent);
+
+        if x_root == y_root {
+            return;
+        }
+
+        // TODO: no union by size/rank
+        parent[x_root] = y_root;
+    }
+
+    // files[i] is stored at parent[i]
+    for i in 0..files.len() {
+        parent.push(i);
+    }
+    for i in 0..files.len() {
+        for j in i..files.len() {
+            if dist[[i, j]] < threshold {
+                _union(i, j, &mut parent);
+            }
+        }
+    }
+
+    let mut filebags = HashMap::new();
+    for (idx, f) in files.iter().enumerate() {
+        let parent_idx = _find(idx, &mut parent);
+        let bag = filebags
+            .entry(parent_idx)
+            .or_insert(Vec::<&VideoHistogram>::new());
+        bag.push(f);
+    }
+
+    filebags.into_values().filter(|x| x.len() > 1).collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashSet;
 
     // only used during development
-    #[test]
+    //#[test]
     fn _test_calculate_histogram() -> Result<()> {
         let h = calculate_histogram("/media/scratch/vid1_720p.mp4")?;
         //println!("Histogram shape: {:?}, sum: {}", h.shape(), h.sum());
@@ -227,10 +334,8 @@ mod tests {
         let db = Database::new("test_get_files_without_histogram.sqlite", true)?;
         db.db.execute(
             "INSERT INTO file_digests (id, path, size) VALUES \
-                (1, '/tmp/a.mp4', 1), 
-                (2, '/tmp/b.jpg', 1), 
-                (3, '/tmp/c.wmv', 1), 
-                (4, '/tmp/d.avi', 1)",
+                (1, '/tmp/a.mp4', 1), (2, '/tmp/b.jpg', 1), 
+                (3, '/tmp/c.wmv', 1), (4, '/tmp/d.avi', 1)",
             params![],
         )?;
 
@@ -242,6 +347,72 @@ mod tests {
         let files = db.get_files_without_histogram()?;
         let ids: Vec<i64> = files.into_iter().map(|x| x.0).collect();
         assert_eq!(ids, [1, 4]);
+        Ok(())
+    }
+
+    #[test]
+    fn test_get_all_files_with_histogram() -> Result<()> {
+        let db = Database::new("test_get_files_without_histogram.sqlite", true)?;
+        db.db.execute(
+            "INSERT INTO file_digests (id, path, size) VALUES \
+                (1, '/tmp/a.mp4', 10), (2, '/tmp/b.jpg', 11), 
+                (3, '/tmp/c.wmv', 12), (4, '/tmp/d.avi', 13)",
+            params![],
+        )?;
+
+        db.db.execute(
+            "INSERT INTO video_histograms (id, histogram) VALUES \
+            (3, x'aaaaaaaa'), (4, x'aaaaaaab')",
+            params![],
+        )?;
+
+        let files = db.get_all_files_with_histogram()?;
+
+        // TODO: this test relies on the order of the returned files
+        let mut target_list = Vec::new();
+        target_list.push(VideoHistogram {
+            id: 3,
+            path: "/tmp/c.wmv".to_string(),
+            size: 12,
+            histogram: vec![170, 170, 170, 170],
+        });
+        target_list.push(VideoHistogram {
+            id: 4,
+            path: "/tmp/d.avi".to_string(),
+            size: 13,
+            histogram: vec![170, 170, 170, 171],
+        });
+        assert_eq!(files, target_list);
+        Ok(())
+    }
+
+    #[test]
+    fn test_find_similar_files() -> Result<()> {
+        let db = Database::new("test_find_similar_files.sqlite", true)?;
+        db.db.execute(
+            "INSERT INTO file_digests (id, path, size) VALUES \
+                (1, '/tmp/a.mp4', 10), (2, '/tmp/b.mp4', 11), 
+                (3, '/tmp/c.wmv', 12), (4, '/tmp/d.avi', 13),
+                (5, 'tmp/e.wmv', 15)",
+            params![],
+        )?;
+
+        db.db.execute(
+            "INSERT INTO video_histograms (id, histogram) VALUES \
+            (1, x'ff00ff00'), (2, x'ff01ff00'), (3, x'000000a0'), \
+            (4, x'00ff00ff'), (5, x'000000a2') ",
+            params![],
+        )?;
+        let files = db.get_all_files_with_histogram()?;
+        let threshold = 128;
+        let dist = calculate_distances(&files);
+        let similar_files = find_similar_files(&files, &dist, threshold);
+        let res: HashSet<Vec<i64>> = similar_files
+            .iter()
+            .map(|b| b.iter().map(|x| x.id).collect())
+            .collect();
+        let expected = HashSet::from([vec![4], vec![3, 5], vec![1, 2]]);
+        assert_eq!(res, expected);
         Ok(())
     }
 }

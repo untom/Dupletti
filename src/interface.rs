@@ -1,5 +1,6 @@
 use crate::database::Database;
 use crate::similarities;
+use crate::videohistogram;
 use anyhow::Result;
 use log;
 use rouille::{router, Response};
@@ -59,6 +60,19 @@ pub fn render_results_to_html(
     Ok(html)
 }
 
+pub fn render_videohash_results_to_html(
+    result: Vec<Vec<&videohistogram::VideoHistogram>>,
+    tera: &Tera,
+    allow_preview: bool,
+) -> Result<String> {
+    log::debug!("rendering to HTML");
+    let mut context = TeraContext::new();
+    context.insert("result", &result);
+    context.insert("allow_preview", &allow_preview);
+    let html = tera.render("videohash.html.tera", &context)?;
+    Ok(html)
+}
+
 fn rename_file(db: &Database, id: i64, new_name: String) -> Result<&str> {
     let file = db.lookup_filedigest(id)?;
     let status = if file.path.exists() {
@@ -93,6 +107,11 @@ pub fn start_web_interface(
         log::warn!("You seem to be binding to a public interface and use --allow_preview.");
     }
 
+    let videohistograms = db.get_all_files_with_histogram().unwrap();
+    log::debug!("Num Videohistograms: {}", videohistograms.len());
+    let videohistograms_distances = videohistogram::calculate_distances(&videohistograms);
+    log::debug!("Done with distance calculation");
+
     let tera = Tera::new("templates/**/*.html.tera").unwrap();
     let listen_address = format!("{}:{}", bind_address, port);
     let db_mutex = Mutex::new(db);
@@ -112,6 +131,17 @@ pub fn start_web_interface(
                 } else {
                     Response::text("Render Error").with_status_code(500)
                 }
+            },
+
+            (GET) (/videohistogram/{threshold: u16}) => {
+                log::debug!("# Clustering with threshold {}", threshold);
+                let mut results = videohistogram::find_similar_files(&videohistograms, &videohistograms_distances, threshold);
+                // sort by filesize (maximum first)
+                results.sort_unstable_by_key(|bag| bag.iter().map(|x| x.size).max());
+                results.reverse();
+                log::info!("# Clusters({}): {}", threshold, results.len());
+                let html = render_videohash_results_to_html(results, &tera, allow_preview).unwrap();
+                Response::html(html)
             },
 
             (GET) (/rename/{id: i64}/{new_name: String}) => {

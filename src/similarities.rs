@@ -106,12 +106,9 @@ mod tests {
         let db = Database::new("test.sqlite", true)?;
         db.db.execute(
             "INSERT INTO file_digests (id, path, digest, size) VALUES \
-                (1, '/tmp/a', x'aaaaaaaa', 2), 
-                (2, '/tmp/b', x'aaaaaaaa', 2), 
-                (3, '/tmp/d', x'aaaaaaab', 1), 
-                (4, '/tmp/e', x'aaaaaaac', 3), 
-                (5, '/tmp/c', x'aaaaaaab', 1), 
-                (6, '/tmp/f', x'aaaaaaac', 3), 
+                (1, '/tmp/a', x'aaaaaaaa', 2), (2, '/tmp/b', x'aaaaaaaa', 2), 
+                (3, '/tmp/d', x'aaaaaaab', 1), (4, '/tmp/e', x'aaaaaaac', 3), 
+                (5, '/tmp/c', x'aaaaaaab', 1), (6, '/tmp/f', x'aaaaaaac', 3), 
                 (7, '/tmp/g', x'aaaaaaad', 4)",
             params![],
         )?;

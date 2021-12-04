@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <title>Dupletti Results</title>
+    <link rel="stylesheet" href="style.css">
+    <script src="script.js"></script>
+  </head>
+  <body>
+    {% for bag in result -%}
+    <ul>
+        {% for file in bag -%}
+            <li class="fileentry" id="f{{file.id}}">
+              {% if allow_preview %}
+              <a href="preview/{{file.path}}" class="filename" title="{{file.histogram}}">{{file.path}}</a> ({{file.size | filesizeformat}})
+              {% else %}
+              <a href="file://{{file.path}}" class="filename" title="{{file.histogram}}">{{file.path}}</a> ({{file.size | filesizeformat}})
+              {% endif %}
+              <button type="button" class="rename_button">Rename</button> 
+              <button type="button" class="remove_button">Remove</button> 
+            </li>
+        {% endfor %}
+    </ul>
+    {% endfor %}
+
+<script type="text/javascript">
+
+
+function rename(event) {
+  let target = event.target || event.srcElement;
+  let parent = target.parentElement;
+  let filename = parent.querySelector(".filename").textContent
+  let fid = parent.id.substring(1);
+  let new_name = encodeURIComponent(prompt("New Name:", filename));
+
+  fetch(`./rename/${fid}/${new_name}`)
+  .then(response => {
+    if (!response.ok) {
+      throw new Error(`HTTP error: Status ${response.status}`);
+    }
+    return response.text();
+  })
+  .then(data => {
+    let raw_name = decodeURIComponent(new_name)
+    parent.querySelector(".filename").textContent = raw_name;
+    if (data.toLowerCase() != "success") {
+      throw new Error(`Backend error: Return value ${data}`);
+    } else {
+      console.log(`Renaming ${fid} successful`);
+    }
+  })
+  .catch(e => console.log(`Remove error on ${fid}: ` + e.message));
+}
+
+
+function remove(event) {
+  let target = event.target || event.srcElement;
+  let fid = target.parentNode.id.substring(1);
+
+  fetch('./remove/' + fid)
+  .then(response => {
+    if (!response.ok) {
+      throw new Error(`HTTP error: Status ${response.status}`);
+    }
+    return response.text();
+  })
+  .then(data => {
+    target.parentElement.remove();
+    if (data.toLowerCase() != "success") {
+      throw new Error(`Backend error: Return value ${data}`);
+    } else {
+      console.log(`removing ${fid} successful`);
+    }
+  })
+  .catch(e => console.log(`Remove failed on ${fid}. ` + e.message));
+}
+
+
+// Add buttons
+let rename_buttons = document.querySelectorAll(".rename_button");
+for (b of rename_buttons) {b.addEventListener("click", rename)};
+
+let remove_buttons = document.querySelectorAll(".remove_button");
+for (b of remove_buttons) {b.addEventListener("click", remove)};
+
+
+</script> 
+</body>
+</html>

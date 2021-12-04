@@ -88,7 +88,7 @@ impl Database {
             params![path, file.digest, file.size],
         )?;
         if cnt == 0 {
-            return Err(anyhow!("Unable to insert {}",path));
+            return Err(anyhow!("Unable to insert {}", path));
         }
         Ok(())
     }
