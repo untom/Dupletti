@@ -1,12 +1,13 @@
 use crate::database::Database;
 use crate::similarities;
-use crate::videohistogram;
-use anyhow::Result;
+use crate::videohash;
+use anyhow::{anyhow, Result};
 use log;
+use ndarray::prelude::*;
 use rouille::{router, Response};
 use rusqlite::params;
 use std::fs;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use tera::{Context as TeraContext, Tera};
 
 impl Database {
@@ -59,7 +60,7 @@ pub fn render_results_to_html(
 }
 
 pub fn render_videohash_results_to_html(
-    result: Vec<Vec<&videohistogram::VideoHistogram>>,
+    result: Vec<Vec<&videohash::VideoHash>>,
     tera: &Tera,
     allow_preview: bool,
 ) -> Result<String> {
@@ -95,6 +96,84 @@ fn delete_file(db: &Database, id: i64) -> Result<&str> {
     Ok(status)
 }
 
+fn handle_index_request(
+    db_mutex: &Mutex<Database>,
+    tera: &Tera,
+    allow_preview: bool,
+) -> Result<Response> {
+    if let Ok(db) = db_mutex.lock() {
+        let results = similarities::get_list_of_similar_files(&db)?;
+        let html = render_results_to_html(&results, &tera, allow_preview).unwrap();
+        Ok(Response::html(html))
+    } else {
+        return Err(anyhow!("Unable to lock DB"));
+    }
+}
+
+fn handle_preview_request(db_mutex: &Mutex<Database>, file_id: i64) -> Result<Response> {
+    if let Ok(db) = db_mutex.lock() {
+        let filepath = db.lookup_filedigest(file_id)?.path;
+        let extension = filepath.extension().and_then(|s| s.to_str()).unwrap_or("");
+        let file = fs::File::open(&filepath)?;
+        Ok(Response::from_file(
+            rouille::extension_to_mime(extension),
+            file,
+        ).with_no_cache())  // files might be big, so don't cache them
+    } else {
+        return Err(anyhow!("Unable to lock DB"));
+    }
+}
+
+fn handle_videohash_request(
+    videohashs: &Vec<videohash::VideoHash>,
+    videohashs_distances: &Array2<u16>,
+    threshold: u16,
+    tera: &Tera,
+    allow_preview: bool,
+) -> Result<Response> {
+    log::debug!("# Clustering with threshold {}", threshold);
+    let mut results = videohash::find_similar_files(&videohashs, &videohashs_distances, threshold);
+    // sort by filesize (maximum first)
+    let mut total_size_saved = 0;
+    for bag in results.iter() {
+        let mut max_size = 0;
+        for f in bag {
+            total_size_saved += f.size;
+            max_size = std::cmp::max(max_size, f.size);
+        }
+        total_size_saved -= max_size;
+    }
+    let total_size_gb = total_size_saved as f64 / (1024.0 * 1024.0 * 1024.0);
+    log::info!("Max saved size by videohash: {:.2} GB", total_size_gb);
+    results.sort_unstable_by_key(|bag| bag.iter().map(|x| x.size).max());
+    results.reverse();
+    log::info!("# Clusters({}): {}", threshold, results.len());
+    let html = render_videohash_results_to_html(results, &tera, allow_preview)?;
+    Ok(Response::html(html))
+}
+
+fn handle_rename_request(
+    db_mutex: &Mutex<Database>,
+    id: i64,
+    new_name: String,
+) -> Result<Response> {
+    log::debug!("renaming {} to {}", id, new_name);
+    if let Ok(db) = db_mutex.lock() {
+        Ok(Response::text(rename_file(&db, id, new_name)?))
+    } else {
+        return Err(anyhow!("Unable to lock DB"));
+    }
+}
+
+fn handle_remove_request(db_mutex: &Mutex<Database>, id: i64) -> Result<Response> {
+    log::debug!("Deleting {}", id);
+    if let Ok(db) = db_mutex.lock() {
+        Ok(Response::text(delete_file(&db, id)?))
+    } else {
+        return Err(anyhow!("Unable to lock DB"));
+    }
+}
+
 pub fn start_web_interface(
     db: Database,
     bind_address: String,
@@ -105,84 +184,25 @@ pub fn start_web_interface(
         log::warn!("You seem to be binding to a public interface and use --allow_preview.");
     }
 
-    let videohistograms = db.get_all_files_with_histogram().unwrap();
-    log::debug!("Num Videohistograms: {}", videohistograms.len());
-    let videohistograms_distances = videohistogram::calculate_distances(&videohistograms);
+    let videohashs = db.get_all_files_with_videohash().unwrap();
+    log::debug!("Num videohashs: {}", videohashs.len());
+    let videohashs_distances = videohash::calculate_distances(&videohashs);
     log::debug!("Done with distance calculation");
 
     let tera = Tera::new("templates/**/*.html.tera").unwrap();
     let listen_address = format!("{}:{}", bind_address, port);
-    let db_mutex = Mutex::new(db);
+    let db_mutex = Arc::new(Mutex::new(db));
     rouille::start_server(listen_address, move |request| {
-        if allow_preview {
-            if let Some(request) = request.remove_prefix("/preview") {
-                return rouille::match_assets(&request, "/");
-            }
-        }
-
+        let db_mutex = Arc::clone(&db_mutex);
         let response = router!(request,
-            (GET) (/) => {
-                if let Ok(db) = db_mutex.lock() {
-                    let results = similarities::get_list_of_similar_files(&db).unwrap();
-                    let html = render_results_to_html(&results, &tera, allow_preview).unwrap();
-                    Response::html(html)
-                } else {
-                    Response::text("Render Error").with_status_code(500)
-                }
-            },
-
-            (GET) (/videohistogram/{threshold: u16}) => {
-                log::debug!("# Clustering with threshold {}", threshold);
-                let mut results = videohistogram::find_similar_files(&videohistograms, &videohistograms_distances, threshold);
-                // sort by filesize (maximum first)
-                let mut total_size_saved = 0;
-                for bag in results.iter() {
-                    let mut max_size = 0;
-                    for f in bag {
-                        total_size_saved += f.size;
-                        max_size = std::cmp::max(max_size, f.size);
-                    }
-                    total_size_saved -= max_size;
-                }
-                let total_size_gb = total_size_saved as f64 / (1024.0 * 1024.0 * 1024.0);
-                println!("Total saved size: {:.2} GB", total_size_gb);
-                results.sort_unstable_by_key(|bag| bag.iter().map(|x| x.size).max());
-                results.reverse();
-                log::info!("# Clusters({}): {}", threshold, results.len());
-                let html = render_videohash_results_to_html(results, &tera, allow_preview).unwrap();
-                Response::html(html)
-            },
-
-            (GET) (/rename/{id: i64}/{new_name: String}) => {
-                log::debug!("renaming {} to {}", id, new_name);
-                if let Ok(db) = db_mutex.lock() {
-                    let response = match rename_file(&db, id, new_name) {
-                        Ok(status) => Response::text(status),
-                        Err(error) => Response::text(format!("Rename failure: {:?}", error)).with_status_code(500),
-                    };
-                    response
-                } else {
-                    Response::text("Unable to acquire DB lock").with_status_code(500)
-                }
-            },
-
-            (GET) (/remove/{id: i64}) => {
-                log::debug!("Deleting {}", id);
-                if let Ok(db) = db_mutex.lock() {
-                    let response = match delete_file(&db, id) {
-                        Ok(status) => Response::text(status),
-                        Err(error) => Response::text(format!("Delete failure: {:?}", error)).with_status_code(500),
-                    };
-                    response
-                } else {
-                    Response::text("Unable to acquire DB lock").with_status_code(500)
-                }
-            },
-
-            // default route
-            _ => Response::empty_404()
+            (GET) (/) => {handle_index_request(&db_mutex, &tera, allow_preview)},
+            (GET) (/preview/{file_id: i64}) => {handle_preview_request(&db_mutex, file_id)},
+            (GET) (/rename/{id: i64}/{new_name: String}) => {handle_rename_request(&db_mutex, id, new_name)},
+            (GET) (/remove/{id: i64}) => {handle_remove_request(&db_mutex, id)},
+            (GET) (/videohash/{threshold: u16}) => {handle_videohash_request(&videohashs, &videohashs_distances, threshold, &tera, allow_preview)},
+            _ => Ok(Response::text("Unknown Request").with_status_code(500))
         );
-        response
+        response.unwrap_or_else(|e| Response::text(e.to_string()).with_status_code(500))
     });
 }
 

@@ -12,7 +12,7 @@
         {% for file in bag -%}
             <li class="fileentry" id="f{{file.id}}">
               {% if allow_preview %}
-              <a href="/preview/{{file.path}}" class="filename" title="{{file.histogram}}">{{file.path}}</a> ({{file.size | filesizeformat}})
+              <a href="/preview/{{file.id}}" class="filename" title="{{file.histogram}}">{{file.path}}</a> ({{file.size | filesizeformat}})
               {% else %}
               <a href="file://{{file.path}}" class="filename" title="{{file.histogram}}">{{file.path}}</a> ({{file.size | filesizeformat}})
               {% endif %}
@@ -33,7 +33,7 @@ function rename(event) {
   let fid = parent.id.substring(1);
   let new_name = encodeURIComponent(prompt("New Name:", filename));
 
-  fetch(`./rename/${fid}/${new_name}`)
+  fetch(`/rename/${fid}/${new_name}`)
   .then(response => {
     if (!response.ok) {
       throw new Error(`HTTP error: Status ${response.status}`);
@@ -57,7 +57,7 @@ function remove(event) {
   let target = event.target || event.srcElement;
   let fid = target.parentNode.id.substring(1);
 
-  fetch('./remove/' + fid)
+  fetch('/remove/' + fid)
   .then(response => {
     if (!response.ok) {
       throw new Error(`HTTP error: Status ${response.status}`);

@@ -34,7 +34,7 @@ impl Database {
             db.db
                 .execute("DROP TABLE IF EXISTS file_digests", params![])?;
             db.db
-                .execute("DROP TABLE IF EXISTS video_histograms", params![])?;
+                .execute("DROP TABLE IF EXISTS video_hash", params![])?;
         }
         db.db
             .execute(
@@ -50,7 +50,7 @@ impl Database {
 
         db.db
             .execute(
-                "CREATE TABLE IF NOT EXISTS video_histograms (
+                "CREATE TABLE IF NOT EXISTS video_hash (
 					id          INTEGER PRIMARY KEY,
 					histogram	BLOB   
 					)",
@@ -110,9 +110,12 @@ impl Database {
     }
 
     pub fn delete_filedigest(&self, file_id: i64) -> Result<usize> {
-        Ok(self
+        let num_deleted = self
             .db
-            .execute("DELETE FROM file_digests WHERE id =(?1)", params![file_id])?)
+            .execute("DELETE FROM file_digests WHERE id =(?1)", params![file_id])?;
+        self.db
+            .execute("DELETE FROM video_hash WHERE id =(?1)", params![file_id])?;
+        Ok(num_deleted)
     }
 }
 

@@ -12,7 +12,7 @@
         {% for file in bag -%}
             <li class="fileentry" id="f{{file.id}}">
               {% if allow_preview %}
-              <a href="preview/{{file.path}}" class="filename">{{file.path}}</a> ({{file.size | filesizeformat}})
+              <a href="preview/{{file.id}}" class="filename">{{file.path}}</a> ({{file.size | filesizeformat}})
               {% else %}
               <a href="file://{{file.path}}" class="filename">{{file.path}}</a> ({{file.size | filesizeformat}})
               {% endif %}

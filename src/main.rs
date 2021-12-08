@@ -19,8 +19,8 @@ pub use crate::similarities::*;
 mod filehashing;
 pub use crate::filehashing::*;
 
-mod videohistogram;
-pub use crate::videohistogram::*;
+mod videohash;
+pub use crate::videohash::*;
 
 /// Search for duplicate files
 #[derive(StructOpt, Debug)]
@@ -74,7 +74,7 @@ struct ProgramArguments {
 
     /// Enable similarity-search via color histograms
     #[structopt(long)]
-    videohistogram: bool,
+    videohash: bool,
 }
 
 fn list_files_in_directory<P: AsRef<Path>>(directory: P) -> HashSet<PathBuf> {
@@ -121,7 +121,7 @@ fn update_database<P: AsRef<Path>>(
     path: P,
     commit_batchsize: usize,
     clean_unfound: bool,
-    update_videohistogram: bool,
+    update_videohash: bool,
 ) -> Result<()> {
     log::info!("creating file list");
     let complete_filelist = list_files_in_directory(path);
@@ -135,9 +135,9 @@ fn update_database<P: AsRef<Path>>(
     log::info!("Number of not already indexed files: {:?}", filelist.len());
     log::info!("hashing");
     filehashing::process_filelist(db, filelist, commit_batchsize)?;
-    if update_videohistogram {
-        log::info!("Creating video histograms");
-        videohistogram::update_histograms(db, commit_batchsize)?;
+    if update_videohash {
+        log::info!("Creating video hashes");
+        videohash::update_hashes(db, commit_batchsize)?;
     }
     Ok(())
 }
@@ -176,7 +176,7 @@ fn main() -> Result<()> {
             &args.path,
             args.commit_batchsize,
             args.clean_unfound,
-            args.videohistogram,
+            args.videohash,
         )?;
     }
 
