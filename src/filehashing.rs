@@ -4,7 +4,7 @@ use rayon::prelude::*;
 use rusqlite::params;
 use std::fs;
 use std::io::{self, Read};
-use std::sync::mpsc;
+use std::sync::{mpsc, Mutex};
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -60,7 +60,7 @@ fn _create_filedigest(path: &PathBuf) -> Result<FileDigest> {
 }
 
 pub fn process_filelist(
-    db: &mut Database,
+    db_mutex: &Mutex<Database>,
     filelist: HashSet<PathBuf>,
     commit_batchsize: usize,
 ) -> Result<()> {
@@ -95,12 +95,20 @@ pub fn process_filelist(
             mps,
             fps
         );
-        db.insert_many_filedigests(&filedigests)?;
+        if let Ok(mut db) = db_mutex.lock() {
+            db.insert_many_filedigests(&filedigests)?;
+        } else {
+            return Err(anyhow!("Unable to lock DB"));
+        }
         filedigests.clear();
     }
 
     if filedigests.len() > 0 {
-        db.insert_many_filedigests(&filedigests)?;
+        if let Ok(mut db) = db_mutex.lock() {
+            db.insert_many_filedigests(&filedigests)?;
+        } else {
+            return Err(anyhow!("Unable to lock DB"));
+        }
     }
     Ok(())
 }
@@ -153,10 +161,11 @@ mod tests {
         assert_eq!(digest, target_digest);
 
         let filelist: HashSet<_> = vec![filepath.clone()].into_iter().collect();
-        let mut db = Database::new("test_process_filelist_and_check_hash.sqlite", true)?;
-        process_filelist(&mut db, filelist, 16)?;
+        let db = Database::new("test_process_filelist_and_check_hash.sqlite", true)?;
+        let db_mutex = Mutex::new(db);
+        process_filelist(&db_mutex, filelist, 16)?;
 
-        let inserted_files = db.get_all_filedigests()?;
+        let inserted_files = db_mutex.lock().unwrap().get_all_filedigests()?;
         assert_eq!(inserted_files[0].digest, target_digest);
         Ok(())
     }
@@ -169,7 +178,7 @@ mod tests {
         File::create(first_path.clone()).expect("Failed to create temporary file");
 
         let mut db = Database::new("test_insert_files_multithreaded.sqlite", true)?;
-
+        let db_mutex = Mutex::new(db);
         let mut filelist: HashSet<_> = [
             dir.join("a.txt"),
             dir.join("b"),
@@ -184,9 +193,9 @@ mod tests {
             File::create(path).expect("Failed to create temporary file");
         }
         filelist.insert(first_path);
+        process_filelist(&db_mutex, filelist.clone(), 16)?;
 
-        process_filelist(&mut db, filelist.clone(), 16)?;
-
+        let db = db_mutex.lock().unwrap();
         let all_files = db.get_all_filedigests()?;
         let all_inserted_files: HashSet<_> = all_files.iter().map(|f| f.path.clone()).collect();
         assert_eq!(filelist, all_inserted_files);

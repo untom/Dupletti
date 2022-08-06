@@ -115,41 +115,62 @@ fn handle_preview_request(db_mutex: &Mutex<Database>, file_id: i64) -> Result<Re
         let filepath = db.lookup_filedigest(file_id)?.path;
         let extension = filepath.extension().and_then(|s| s.to_str()).unwrap_or("");
         let file = fs::File::open(&filepath)?;
-        Ok(Response::from_file(
-            rouille::extension_to_mime(extension),
-            file,
-        ).with_no_cache())  // files might be big, so don't cache them
+        Ok(Response::from_file(rouille::extension_to_mime(extension), file).with_no_cache())
+    // files might be big, so don't cache them
     } else {
         return Err(anyhow!("Unable to lock DB"));
     }
 }
 
-fn handle_videohash_request(
-    videohashs: &Vec<videohash::VideoHash>,
-    videohashs_distances: &Array2<u16>,
-    threshold: u16,
-    tera: &Tera,
-    allow_preview: bool,
-) -> Result<Response> {
-    log::debug!("# Clustering with threshold {}", threshold);
-    let mut results = videohash::find_similar_files(&videohashs, &videohashs_distances, threshold);
-    // sort by filesize (maximum first)
-    let mut total_size_saved = 0;
-    for bag in results.iter() {
-        let mut max_size = 0;
-        for f in bag {
-            total_size_saved += f.size;
-            max_size = std::cmp::max(max_size, f.size);
-        }
-        total_size_saved -= max_size;
+pub struct VideoHashData {
+    pub hashes: Vec<videohash::VideoHash>,
+    pub distances: Array2<u16>,
+}
+
+impl VideoHashData {
+    pub fn new(db_mutex: &Mutex<Database>) -> Result<VideoHashData> {
+        let mut vhd = VideoHashData {
+            hashes: Vec::new(),
+            distances: Array::zeros((0, 0)),
+        };
+        vhd.refresh(db_mutex)?;
+        Ok(vhd)
     }
-    let total_size_gb = total_size_saved as f64 / (1024.0 * 1024.0 * 1024.0);
-    log::info!("Max saved size by videohash: {:.2} GB", total_size_gb);
-    results.sort_unstable_by_key(|bag| bag.iter().map(|x| x.size).max());
-    results.reverse();
-    log::info!("# Clusters({}): {}", threshold, results.len());
-    let html = render_videohash_results_to_html(results, &tera, allow_preview)?;
-    Ok(Response::html(html))
+
+    pub fn refresh(&mut self, db_mutex: &Mutex<Database>) -> Result<()> {
+        // We do everything within the DB-mutex so concurrent calls work w/o races.
+        if let Ok(db) = db_mutex.lock() {
+            self.hashes = db.get_all_files_with_videohash()?;
+            log::debug!("Num videohashs: {}", self.hashes.len());
+            self.distances = videohash::calculate_distances(&self.hashes);
+            log::debug!("Done with distance calculation");
+        } else {
+            return Err(anyhow!("Unable to lock DB"));
+        }
+        Ok(())
+    }
+
+    fn handle_request(&self, threshold: u16, tera: &Tera, allow_preview: bool) -> Result<Response> {
+        log::debug!("# Clustering with threshold {}", threshold);
+        let mut results = videohash::find_similar_files(&self.hashes, &self.distances, threshold);
+        // sort by filesize (maximum first)
+        let mut total_size_saved = 0;
+        for bag in results.iter() {
+            let mut max_size = 0;
+            for f in bag {
+                total_size_saved += f.size;
+                max_size = std::cmp::max(max_size, f.size);
+            }
+            total_size_saved -= max_size;
+        }
+        let total_size_gb = total_size_saved as f64 / (1024.0 * 1024.0 * 1024.0);
+        log::info!("Max saved size by videohash: {:.2} GB", total_size_gb);
+        results.sort_unstable_by_key(|bag| bag.iter().map(|x| x.size).max());
+        results.reverse();
+        log::info!("# Clusters({}): {}", threshold, results.len());
+        let html = render_videohash_results_to_html(results, &tera, allow_preview)?;
+        Ok(Response::html(html))
+    }
 }
 
 fn handle_rename_request(
@@ -175,7 +196,7 @@ fn handle_remove_request(db_mutex: &Mutex<Database>, id: i64) -> Result<Response
 }
 
 pub fn start_web_interface(
-    db: Database,
+    db_mutex: Arc<Mutex<Database>>,
     bind_address: String,
     port: u16,
     allow_preview: bool,
@@ -184,22 +205,26 @@ pub fn start_web_interface(
         log::warn!("You seem to be binding to a public interface and use --allow_preview.");
     }
 
-    let videohashs = db.get_all_files_with_videohash().unwrap();
-    log::debug!("Num videohashs: {}", videohashs.len());
-    let videohashs_distances = videohash::calculate_distances(&videohashs);
-    log::debug!("Done with distance calculation");
-
     let tera = Tera::new("templates/**/*.html.tera").unwrap();
     let listen_address = format!("{}:{}", bind_address, port);
-    let db_mutex = Arc::new(Mutex::new(db));
+    let vhd_mutex = Arc::new(Mutex::new(
+        VideoHashData::new(&Arc::clone(&db_mutex)).unwrap(),
+    ));
     rouille::start_server(listen_address, move |request| {
         let db_mutex = Arc::clone(&db_mutex);
+        let vhd_mutex = Arc::clone(&vhd_mutex);
         let response = router!(request,
             (GET) (/) => {handle_index_request(&db_mutex, &tera, allow_preview)},
             (GET) (/preview/{file_id: i64}) => {handle_preview_request(&db_mutex, file_id)},
             (GET) (/rename/{id: i64}/{new_name: String}) => {handle_rename_request(&db_mutex, id, new_name)},
             (GET) (/remove/{id: i64}) => {handle_remove_request(&db_mutex, id)},
-            (GET) (/videohash/{threshold: u16}) => {handle_videohash_request(&videohashs, &videohashs_distances, threshold, &tera, allow_preview)},
+            (GET) (/videohash/{threshold: u16}) => {
+                vhd_mutex.lock().unwrap().handle_request(threshold, &tera, allow_preview)},
+            (GET) (/refresh) => {
+                let mut vhd = vhd_mutex.lock().unwrap();
+                vhd.refresh(&db_mutex).unwrap();
+                vhd.handle_request(1, &tera, allow_preview)
+            },
             _ => Ok(Response::text("Unknown Request").with_status_code(500))
         );
         response.unwrap_or_else(|e| Response::text(e.to_string()).with_status_code(500))

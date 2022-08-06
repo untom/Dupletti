@@ -7,7 +7,8 @@ use rayon::prelude::*;
 use rusqlite::params;
 use serde::Serialize;
 use std::collections::HashMap;
-use std::{sync::mpsc, time::Instant};
+use std::sync::{mpsc, Mutex};
+use std::time::Instant;
 
 const NUM_BUCKETS_SHIFT: usize = 6;
 const NUM_BUCKETS: usize = 256 >> NUM_BUCKETS_SHIFT;
@@ -192,8 +193,16 @@ fn _create_hash(
     })
 }
 
-pub fn update_hashes(db: &mut Database, commit_batchsize: usize) -> Result<()> {
-    let filelist = db.get_files_without_videohash()?;
+fn get_files_without_videohash(db_mutex: &Mutex<Database>) -> Result<Vec<(i64, String, u64)>> {
+    if let Ok(db) = db_mutex.lock() {
+        return Ok(db.get_files_without_videohash()?);
+    } else {
+        return Err(anyhow!("Unable to lock DB"));
+    }
+}
+
+pub fn update_hashes(db_mutex: &Mutex<Database>, commit_batchsize: usize) -> Result<()> {
+    let filelist = get_files_without_videohash(db_mutex)?;
     log::info!("Files to process: {:?}", filelist.len());
     let (tx, rx) = mpsc::channel();
     rayon::spawn(move || {
@@ -226,12 +235,20 @@ pub fn update_hashes(db: &mut Database, commit_batchsize: usize) -> Result<()> {
             mps,
             fps
         );
-        db.insert_many_videohashes(&hashes)?;
+        if let Ok(mut db) = db_mutex.lock() {
+            db.insert_many_videohashes(&hashes)?;
+        } else {
+            return Err(anyhow!("Unable to lock DB"));
+        }
         hashes.clear();
     }
 
     if hashes.len() > 0 {
-        db.insert_many_videohashes(&hashes)?;
+        if let Ok(mut db) = db_mutex.lock() {
+            db.insert_many_videohashes(&hashes)?;
+        } else {
+            return Err(anyhow!("Unable to lock DB"));
+        }
     }
     Ok(())
 }

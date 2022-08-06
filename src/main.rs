@@ -1,10 +1,10 @@
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use glob::glob;
 use log;
 use std::collections::HashSet;
-
 use std::path::{Path, PathBuf};
-
+use std::sync::{Arc, Mutex};
+use std::thread;
 use structopt::StructOpt;
 
 mod database;
@@ -90,22 +90,37 @@ fn list_files_in_directory<P: AsRef<Path>>(directory: P) -> HashSet<PathBuf> {
     return files;
 }
 
-fn remove_outdated_files(db: &Database, current_filelist: &HashSet<PathBuf>) -> Result<()> {
-    let files_in_db = db.get_all_filedigests()?;
+fn get_file_digests(db_mutex: &Mutex<Database>) -> Result<Vec<FileDigest>> {
+    if let Ok(db) = db_mutex.lock() {
+        return Ok(db.get_all_filedigests()?);
+    } else {
+        return Err(anyhow!("Unable to lock DB"));
+    }
+}
+
+fn remove_outdated_files(
+    db_mutex: &Mutex<Database>,
+    current_filelist: &HashSet<PathBuf>,
+) -> Result<()> {
+    let files_in_db = get_file_digests(&db_mutex)?;
     for f in files_in_db {
         if !current_filelist.contains(&f.path) {
             println!("Removing {:?}", f.path);
-            db.delete_filedigest(f.id)?;
+            if let Ok(db) = db_mutex.lock() {
+                db.delete_filedigest(f.id)?;
+            } else {
+                return Err(anyhow!("Unable to lock DB"));
+            }
         }
     }
     Ok(())
 }
 
 fn filter_out_files_already_in_database(
-    db: &Database,
+    db_mutex: &Mutex<Database>,
     current_filelist: HashSet<PathBuf>,
 ) -> Result<HashSet<PathBuf>> {
-    let files_in_db = db.get_all_filedigests()?;
+    let files_in_db = get_file_digests(&db_mutex)?;
     let filepaths_in_db: HashSet<_> = files_in_db.iter().map(|f| &f.path).collect();
     let mut result = HashSet::<PathBuf>::new();
     for f in current_filelist {
@@ -117,7 +132,7 @@ fn filter_out_files_already_in_database(
 }
 
 fn update_database<P: AsRef<Path>>(
-    db: &mut Database,
+    db_mutex: &Mutex<Database>,
     path: P,
     commit_batchsize: usize,
     clean_unfound: bool,
@@ -129,21 +144,21 @@ fn update_database<P: AsRef<Path>>(
 
     if clean_unfound {
         log::info!("Removing outdated files");
-        remove_outdated_files(&db, &complete_filelist)?;
+        remove_outdated_files(&db_mutex, &complete_filelist)?;
     }
-    let filelist = filter_out_files_already_in_database(&db, complete_filelist)?;
+    let filelist = filter_out_files_already_in_database(&db_mutex, complete_filelist)?;
     log::info!("Number of not already indexed files: {:?}", filelist.len());
     log::info!("hashing");
-    filehashing::process_filelist(db, filelist, commit_batchsize)?;
+    filehashing::process_filelist(&db_mutex, filelist, commit_batchsize)?;
     if update_videohash {
         log::info!("Creating video hashes");
-        videohash::update_hashes(db, commit_batchsize)?;
+        videohash::update_hashes(&db_mutex, commit_batchsize)?;
     }
     Ok(())
 }
 
 fn main() -> Result<()> {
-    let args = ProgramArguments::from_args();
+    let args = Arc::new(ProgramArguments::from_args());
 
     let _verbosity = match args.verbose {
         0 => "warn",
@@ -168,25 +183,42 @@ fn main() -> Result<()> {
 
     log::debug!("cmd args: {:?}", args);
 
-    let mut db = Database::new("./digests.sqlite", args.reset_database)?;
-
-    if !args.path.as_os_str().is_empty() {
-        update_database(
-            &mut db,
-            &args.path,
-            args.commit_batchsize,
-            args.clean_unfound,
-            args.videohash,
-        )?;
-    }
+    let db = Database::new("./digests.sqlite", args.reset_database)?;
+    let db_mutex = Arc::new(Mutex::new(db));
+    let db_mutex2 = db_mutex.clone();
+    let args2 = args.clone();
+    let handle = thread::spawn(move || {
+        let args = Arc::clone(&args2);
+        let db_mutex = Arc::clone(&db_mutex2);
+        if !args.path.as_os_str().is_empty() {
+            update_database(
+                &db_mutex,
+                &args.path,
+                args.commit_batchsize,
+                args.clean_unfound,
+                args.videohash,
+            )
+            .unwrap();
+        }
+    });
 
     if !args.no_web {
-        interface::start_web_interface(db, args.bind_address, args.port, args.allow_preview);
+        interface::start_web_interface(
+            db_mutex,
+            args.bind_address.clone(),
+            args.port,
+            args.allow_preview,
+        );
     } else {
-        let results = similarities::get_list_of_similar_files(&db)?;
-        interface::show_results_in_console(&results);
+        if let Ok(db) = db_mutex.lock() {
+            let results = similarities::get_list_of_similar_files(&db)?;
+            interface::show_results_in_console(&results);
+        } else {
+            return Err(anyhow!("Unable to lock DB"));
+        }
     }
     log::debug!("exiting");
+    handle.join().unwrap();
     Ok(())
 }
 
@@ -213,7 +245,8 @@ mod tests {
         testfiles.push(FileDigest::new(5, "/tmp/e", vec![0, 1, 2, 5], 1));
 
         let all_files: HashSet<_> = testfiles.iter().map(|f| f.path.clone()).collect();
-        let new_files = filter_out_files_already_in_database(&db, all_files)?;
+        let db_mutex = Mutex::new(db);
+        let new_files = filter_out_files_already_in_database(&db_mutex, all_files)?;
         let target_files: HashSet<_> = testfiles[3..].iter().map(|f| f.path.clone()).collect();
         assert_eq!(new_files, target_files);
         Ok(())
@@ -221,8 +254,9 @@ mod tests {
 
     #[test]
     fn test_remove_outdated_files() -> Result<()> {
-        let db = Database::new("test.sqlite", true)?;
-        db.db.execute(
+        let db_mutex = Mutex::new(Database::new("test.sqlite", true)?);
+
+        db_mutex.lock().unwrap().db.execute(
             "INSERT INTO file_digests (id, path, digest, size) VALUES \
                 (1, '/tmp/a', x'aaaaaaaa', 2), 
                 (2, '/tmp/b', x'aaaaaaaa', 2), 
@@ -231,13 +265,13 @@ mod tests {
                 (5, '/tmp/e', x'aaaaaaac', 1)",
             params![],
         )?;
-        let mut testfiles = db.get_all_filedigests()?;
+        let mut testfiles = get_file_digests(&db_mutex)?;
 
         testfiles.remove(3);
         let remaining_files: HashSet<_> = testfiles.iter().map(|f| f.path.clone()).collect();
-        remove_outdated_files(&db, &remaining_files)?;
 
-        let new_files = db.get_all_filedigests()?;
+        remove_outdated_files(&db_mutex, &remaining_files)?;
+        let new_files = get_file_digests(&db_mutex)?;
         assert_eq!(new_files, testfiles);
         Ok(())
     }
