@@ -144,6 +144,11 @@ impl Iterator for Video {
             if stream.index() != self.video_stream_index {
                 continue;
             }
+
+            // Only consider key frames, don't even decode rest (saves a lot of compute)
+            if !packet.is_key() {
+                continue;
+            }
             let frame = self._decode_frame(&packet);
             if frame.is_ok() {
                 return Some(frame.unwrap());
