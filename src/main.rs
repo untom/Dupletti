@@ -148,11 +148,13 @@ fn update_database<P: AsRef<Path>>(
     }
     let filelist = filter_out_files_already_in_database(&db_mutex, complete_filelist)?;
     log::info!("Number of not already indexed files: {:?}", filelist.len());
-    log::info!("hashing");
+    log::info!("Hashing");
     filehashing::process_filelist(&db_mutex, filelist, commit_batchsize)?;
+    log::info!("hashing done");
     if update_videohash {
         log::info!("Creating video hashes");
         videohash::update_hashes(&db_mutex, commit_batchsize)?;
+        log::info!("video hashes done");
     }
     Ok(())
 }
