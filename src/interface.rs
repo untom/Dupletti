@@ -165,7 +165,7 @@ impl VideoHashData {
         }
         let total_size_gb = total_size_saved as f64 / (1024.0 * 1024.0 * 1024.0);
         log::info!("Max saved size by videohash: {:.2} GB", total_size_gb);
-        results.sort_unstable_by_key(|bag| bag.iter().map(|x| x.size).max());
+        results.sort_unstable_by_key(|bag| bag.iter().map(|x| x.size).min());
         results.reverse();
         log::info!("# Clusters({}): {}", threshold, results.len());
         let html = render_videohash_results_to_html(results, &tera, allow_preview)?;
