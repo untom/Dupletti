@@ -96,7 +96,9 @@ impl Video {
                 .ok_or(anyhow!("No video stream found"))?;
             let video_stream_index = input.index();
 
-            let decoder = input.codec().decoder().video()?;
+            //let decoder = input.codec().decoder().video()?;
+            let context_decoder = ffmpeg::codec::context::Context::from_parameters(input.parameters())?;
+            let decoder = context_decoder.decoder().video()?;
             let w = decoder.width();
             let h = decoder.height();
 

@@ -16,6 +16,7 @@
               {% else %}
               <a href="file://{{file.path}}" class="filename" title="{{file.histogram}}">{{file.path}}</a> ({{file.size | filesizeformat}})
               {% endif %}
+              <a href="file://{{file.path}}" class="watch_locally" title="{{file.path}}">watch</a>
               <button type="button" class="rename_button">Rename</button> 
               <button type="button" class="remove_button">Remove</button> 
             </li>
@@ -75,14 +76,12 @@ function remove(event) {
   .catch(e => console.log(`Remove failed on ${fid}. ` + e.message));
 }
 
-
 // Add buttons
 let rename_buttons = document.querySelectorAll(".rename_button");
 for (b of rename_buttons) {b.addEventListener("click", rename)};
 
 let remove_buttons = document.querySelectorAll(".remove_button");
 for (b of remove_buttons) {b.addEventListener("click", remove)};
-
 
 </script> 
 </body>

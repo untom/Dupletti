@@ -19,7 +19,7 @@ log = "0.4"
 env_logger = "0.8"
 serde = { version = "1.0", features = ["derive"] }
 rouille = "3.2"
-ffmpeg-next = "4.4"
+ffmpeg-next = "5.1"
 ndarray = "0.15"
 ndarray-stats = "0.5"
 kiddo = "0.2"
